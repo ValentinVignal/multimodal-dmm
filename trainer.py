@@ -51,6 +51,8 @@ class Trainer(object):
     # Batch, epoch and gradient arguments
     parser.add_argument('--batch_size', type=int, default=100, metavar='N',
                         help='input batch size for training')
+    parser.add_argument('--batch_sz_eval', type=int, default=None, metavar='N',
+                        help='(optional) separate batch size for evaluation')
     parser.add_argument('--split', type=int, default=1, metavar='N',
                         help='split each training sequence into N chunks')
     parser.add_argument('--bylen', action='store_true', default=False,
@@ -74,6 +76,12 @@ class Trainer(object):
                         help='reconstruction loss multiplier')
     parser.add_argument('--kld_anneal', type=int, default=100, metavar='N',
                         help='epochs to increase kld_mult over')
+
+    # Data loader arguments
+    parser.add_argument('--data_workers', type=int, default=1, metavar='N',
+                        help='number of data loader worker threads')
+    parser.add_argument('--pin_memory', type=bool, default=True, metavar='B',
+                        help='whether to pin memory for CUDA transfer')
 
     # Data normalization and corruption (i.e. random deletion)
     parser.add_argument('--normalize', type=str, default=[],
@@ -235,7 +243,7 @@ class Trainer(object):
             if args.gradients:
                 plot_grad_flow(model.named_parameters())
             # Gradient clipping
-            if args.clip_grad > 0:
+            if args.clip_grad is not None and args.clip_grad > 0:
                 clip_grad_norm_(model.parameters(), args.clip_grad)
             # Step, then zero gradients
             optimizer.step()
@@ -335,6 +343,9 @@ class Trainer(object):
 
     def pre_build_args(self, args):
         """Process args before model is constructed."""
+        # Set batch_sz_eval to batch_size if unspecified
+        if args.batch_sz_eval is None:
+            args.batch_sz_eval = args.batch_size
         # Override model and model_args based on method flag
         if args.method in ['bfvi', 'b-mask', 'f-mask', 'b-skip', 'f-skip']:
             print("Setting up '{}' inference method...".format(args.method))
@@ -349,7 +360,7 @@ class Trainer(object):
                     "rnn_skip" : 'skip' in args.method,
                     "rnn_dir" : 'bwd' if args.method[0] == 'b' else 'fwd'
                 }
-        else if args.method is not None:
+        elif args.method is not None:
             print("Ignoring unknown inference method '{}'".format(args.method))
         return args
 
@@ -387,18 +398,20 @@ class Trainer(object):
     def run_eval(self, args):
         """Evaluate on both training and test set."""
         print("--Training--")
-        eval_loader = DataLoader(self.train_data, batch_size=args.batch_size,
+        eval_loader = DataLoader(self.train_data, batch_size=args.batch_sz_eval,
                                  collate_fn=mseq.seq_collate_dict,
-                                 shuffle=False, pin_memory=True)
+                                 shuffle=False, pin_memory=args.pin_memory,
+                                 num_workers=args.data_workers)
         with torch.no_grad():
             args.eval_set = 'train'
             results, train_metrics  = self.evaluate(eval_loader, args)
             self.save_results(results, args)
 
         print("--Testing--")
-        eval_loader = DataLoader(self.test_data, batch_size=args.batch_size,
+        eval_loader = DataLoader(self.test_data, batch_size=args.batch_sz_eval,
                                  collate_fn=mseq.seq_collate_dict,
-                                 shuffle=False, pin_memory=True)
+                                 shuffle=False, pin_memory=args.pin_memory,
+                                 num_workers=args.data_workers)
         with torch.no_grad():
             args.eval_set = 'test'
             results, test_metrics  = self.evaluate(eval_loader, args)
@@ -411,9 +424,10 @@ class Trainer(object):
     def run_find(self, args):
         """Finds best trained model in save directory."""
         model = self.model
-        test_loader = DataLoader(self.test_data, batch_size=args.batch_size,
+        test_loader = DataLoader(self.test_data, batch_size=args.batch_sz_eval,
                                  collate_fn=mseq.seq_collate_dict,
-                                 shuffle=False, pin_memory=True)
+                                 shuffle=False, pin_memory=args.pin_memory,
+                                 num_workers=args.data_workers)
         best_loss, best_epoch = float('inf'), -1
         args.eval_set = None
 
@@ -480,10 +494,12 @@ class Trainer(object):
         # Batch data using data loaders
         train_loader = DataLoader(train_data, batch_size=args.batch_size,
                                   collate_fn=mseq.seq_collate_dict,
-                                  shuffle=True, pin_memory=True)
-        test_loader = DataLoader(test_data, batch_size=args.batch_size,
+                                  shuffle=True, pin_memory=args.pin_memory,
+                                  num_workers=args.data_workers)
+        test_loader = DataLoader(test_data, batch_size=args.batch_sz_eval,
                                  collate_fn=mseq.seq_collate_dict,
-                                 shuffle=False, pin_memory=True)
+                                 shuffle=False, pin_memory=args.pin_memory,
+                                 num_workers=args.data_workers)
 
         # Train and save best model
         best_loss = float('inf')
